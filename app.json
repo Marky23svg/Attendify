@@ -41,7 +41,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#0055FF",
+          "backgroundColor": "#0066FF",
           "image": "./assets/images/Attendify-logo-white.png",
           "imageWidth": 160,
           "resizeMode": "contain"

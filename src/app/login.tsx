@@ -201,13 +201,6 @@ export default function LoginScreen() {
                   </View>
                 </View>
 
-                {/* Forgot Password */}
-                <TouchableOpacity className="self-end mb-6">
-                  <Text className="text-[#0066FF] text-sm font-semibold">
-                    Forgot Password?
-                  </Text>
-                </TouchableOpacity>
-
                 {/* Login Button */}
                 <TouchableOpacity
                   className="rounded-2xl py-4 flex-row items-center justify-center"

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Animated, Dimensions, Image, StyleSheet, View } from 'react-native';
 
-export const SPLASH_BACKGROUND = '#0055FF';
+export const SPLASH_BACKGROUND = '#0066FF';
 
 const RING_RADII = [200, 300, 410, 530];
 const RING_OPACITIES = [0.18, 0.12, 0.08, 0.05];
