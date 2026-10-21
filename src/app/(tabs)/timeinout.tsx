@@ -53,6 +53,13 @@ const timeStringToMinutes = (t: string): number => {
   return Number(h) * 60 + Number(m) + Number(s) / 60;
 };
 
+const toDateString = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const formatTime12 = (t: string): string => {
   const [hStr = '0', mStr = '0'] = t.split(':');
   let hours = Number(hStr);
@@ -80,6 +87,21 @@ const computeTotalHours = (timeIn: Date, timeOut: Date): number => {
   return Math.round((diffMs / 3_600_000) * 100) / 100;
 };
 
+const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timed out')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+
 export default function TimeInOutScreen() {
   const { settings, loading: settingsLoading } = useWorkSettings();
   const [timedIn, setTimedIn] = useState(false);
@@ -91,6 +113,14 @@ export default function TimeInOutScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [captured, setCaptured] = useState<CapturedData | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [locState, setLocState] = useState<
+    'idle' | 'pending' | 'ready' | 'failed'
+  >('idle');
+  const locationPromiseRef = useRef<Promise<{
+    label: string;
+    lat: number;
+    lng: number;
+  }> | null>(null);
   const cameraRef = useRef<CameraView>(null);
 
   const [liveTime, setLiveTime] = useState(
@@ -146,7 +176,7 @@ export default function TimeInOutScreen() {
       if (!user) return;
 
       const now = new Date();
-      const today = now.toISOString().split('T')[0];
+      const today = toDateString(now);
 
       const { data, error } = await supabase
         .from('attendance')
@@ -196,6 +226,9 @@ export default function TimeInOutScreen() {
   const openModal = () => {
     setStage('choice');
     setCaptured(null);
+    setLocationError(null);
+    setLocState('idle');
+    locationPromiseRef.current = null;
     setModalVisible(true);
   };
 
@@ -208,6 +241,9 @@ export default function TimeInOutScreen() {
       setModalVisible(false);
       setStage('choice');
       setCaptured(null);
+      setLocationError(null);
+      setLocState('idle');
+      locationPromiseRef.current = null;
       setIsSubmitting(false);
     });
   };
@@ -223,23 +259,45 @@ export default function TimeInOutScreen() {
         return { label: 'Location permission denied', lat: 0, lng: 0 };
       }
 
-      const loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
+      let loc: Location.LocationObject;
+      try {
+        loc = await withTimeout(
+          Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          }),
+          10_000
+        );
+      } catch {
+        const lastKnown = await Location.getLastKnownPositionAsync({
+          maxAge: 5 * 60 * 1000,
+        }).catch(() => null);
+        if (!lastKnown) {
+          return { label: 'Location unavailable', lat: 0, lng: 0 };
+        }
+        loc = lastKnown;
+      }
 
       const { latitude, longitude } = loc.coords;
       let label = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
 
       try {
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`,
-          {
-            headers: {
-              'User-Agent': 'Attendify-App/1.0',
-              Accept: 'application/json',
-            },
-          }
-        );
+        const controller = new AbortController();
+        const abortTimer = setTimeout(() => controller.abort(), 6_000);
+        let response: Response;
+        try {
+          response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`,
+            {
+              headers: {
+                'User-Agent': 'Attendify-App/1.0',
+                Accept: 'application/json',
+              },
+              signal: controller.signal,
+            }
+          );
+        } finally {
+          clearTimeout(abortTimer);
+        }
 
         if (response.ok) {
           const data = await response.json();
@@ -285,11 +343,13 @@ export default function TimeInOutScreen() {
   };
 
   const takeSelfie = async () => {
-    if (!cameraRef.current || isSubmitting) return;
+    const camera = cameraRef.current;
+    if (!camera || isSubmitting) return;
     setIsSubmitting(true);
+    setLocationError(null);
 
     try {
-      const photo = await cameraRef.current.takePictureAsync({
+      const photo = await camera.takePictureAsync({
         quality: 0.5,
         base64: true,
       });
@@ -298,15 +358,6 @@ export default function TimeInOutScreen() {
         throw new Error('No photo data');
       }
 
-      const loc = await getCurrentLocation();
-
-      if (loc.lat === 0 && loc.lng === 0) {
-        setLocationError(loc.label);
-        setIsSubmitting(false);
-        return;
-      }
-
-      setLocationError(null);
       const now = new Date();
       const timeString = now.toLocaleTimeString('en-US', {
         hour: '2-digit',
@@ -326,12 +377,29 @@ export default function TimeInOutScreen() {
         mode,
         date: dateString,
         time: timeString,
-        location: loc.label,
-        lat: loc.lat,
-        lng: loc.lng,
+        location: '',
+        lat: 0,
+        lng: 0,
       });
-
+      setLocState('pending');
       setStage('preview');
+
+      // Location loads in the background while the user reviews the preview
+      const locPromise = getCurrentLocation();
+      locationPromiseRef.current = locPromise;
+      locPromise.then((loc) => {
+        if (locationPromiseRef.current !== locPromise) return;
+        if (loc.lat === 0 && loc.lng === 0) {
+          setLocationError(loc.label);
+          setLocState('failed');
+          return;
+        }
+        setLocationError(null);
+        setLocState('ready');
+        setCaptured((c) =>
+          c ? { ...c, location: loc.label, lat: loc.lat, lng: loc.lng } : c
+        );
+      });
     } catch (err) {
       Alert.alert('Error', 'Failed to capture selfie. Please try again.');
       console.error(err);
@@ -343,6 +411,8 @@ export default function TimeInOutScreen() {
   const retakeSelfie = () => {
     setCaptured(null);
     setLocationError(null);
+    setLocState('idle');
+    locationPromiseRef.current = null;
     setStage('camera');
   };
 
@@ -357,6 +427,43 @@ export default function TimeInOutScreen() {
         Alert.alert('Not signed in', 'Please log in again.');
         setIsSubmitting(false);
         return;
+      }
+
+      // Ensure we have a location before uploading/saving
+      let submitLoc = {
+        label: captured.location,
+        lat: captured.lat,
+        lng: captured.lng,
+      };
+      if (submitLoc.lat === 0 && submitLoc.lng === 0) {
+        const loc = await (locState === 'failed'
+          ? getCurrentLocation()
+          : (locationPromiseRef.current ?? getCurrentLocation()));
+        if (loc.lat === 0 && loc.lng === 0) {
+          setLocationError(loc.label);
+          setLocState('failed');
+          Alert.alert(
+            'Location required',
+            loc.label === 'Location permission denied'
+              ? 'Location permission denied. Please enable it in settings.'
+              : 'Could not fetch your location. Please try again.'
+          );
+          setIsSubmitting(false);
+          return;
+        }
+        submitLoc = { label: loc.label, lat: loc.lat, lng: loc.lng };
+        setLocationError(null);
+        setLocState('ready');
+        setCaptured((c) =>
+          c
+            ? {
+                ...c,
+                location: submitLoc.label,
+                lat: submitLoc.lat,
+                lng: submitLoc.lng,
+              }
+            : c
+        );
       }
 
       const timestamp = Date.now();
@@ -381,7 +488,7 @@ export default function TimeInOutScreen() {
 
       const now = new Date();
       const nowISO = now.toISOString();
-      const today = nowISO.split('T')[0];
+      const today = toDateString(now);
 
       const { data: existing, error: fetchError } = await supabase
         .from('attendance')
@@ -405,16 +512,16 @@ export default function TimeInOutScreen() {
       if (captured.mode === 'time-in') {
         payload.time_in = nowISO;
         payload.time_in_selfie = fileName;
-        payload.time_in_location = captured.location;
-        payload.time_in_lat = captured.lat;
-        payload.time_in_lng = captured.lng;
+        payload.time_in_location = submitLoc.label;
+        payload.time_in_lat = submitLoc.lat;
+        payload.time_in_lng = submitLoc.lng;
         payload.status = computeStatus(now, settings);
       } else {
         payload.time_out = nowISO;
         payload.time_out_selfie = fileName;
-        payload.time_out_location = captured.location;
-        payload.time_out_lat = captured.lat;
-        payload.time_out_lng = captured.lng;
+        payload.time_out_location = submitLoc.label;
+        payload.time_out_lat = submitLoc.lat;
+        payload.time_out_lng = submitLoc.lng;
 
         if (existing?.time_in) {
           payload.total_hours = computeTotalHours(new Date(existing.time_in), now);
@@ -813,20 +920,6 @@ export default function TimeInOutScreen() {
                 </View>
               )}
 
-              {locationError && (
-                <View
-                  className="absolute left-4 right-4 rounded-2xl px-4 py-3 flex-row items-center"
-                  style={{ bottom: 160, backgroundColor: '#FEE9EB', zIndex: 10 }}
-                >
-                  <MapPin size={16} color="#DC2626" />
-                  <Text className="text-red-700 text-sm font-medium ml-2 flex-1">
-                    {locationError === 'Location permission denied'
-                      ? 'Location permission denied. Please enable it in settings.'
-                      : 'Could not fetch your location. Please try again.'}
-                  </Text>
-                </View>
-              )}
-
               <SafeAreaView className="absolute top-0 left-0 right-0">
                 <View className="flex-row items-center justify-between px-4 pt-2">
                   <TouchableOpacity
@@ -851,12 +944,12 @@ export default function TimeInOutScreen() {
               <View
                 pointerEvents="none"
                 className="absolute items-center justify-center"
-                style={{ top: '22%', left: 0, right: 0 }}
+                style={{ top: '27%', left: 0, right: 0 }}
               >
                 <View
                   style={{
-                    width: '70%',
-                    aspectRatio: 1,
+                    width: '58%',
+                    aspectRatio: 0.76,
                     borderRadius: 999,
                     borderWidth: 2,
                     borderColor: 'rgba(255,255,255,0.7)',
@@ -961,10 +1054,16 @@ export default function TimeInOutScreen() {
                       />
                     ) : (
                       <View className="flex-1 bg-[#EAF2FF] items-center justify-center">
-                        <MapPin size={28} color="#0066FF" />
-                        <Text className="text-[#64748B] text-sm mt-2">
-                          Location unavailable
-                        </Text>
+                        {locState === 'pending' ? (
+                          <ActivityIndicator color="#0066FF" />
+                        ) : (
+                          <>
+                            <MapPin size={28} color="#0066FF" />
+                            <Text className="text-[#64748B] text-sm mt-2">
+                              Location unavailable
+                            </Text>
+                          </>
+                        )}
                       </View>
                     )}
 
@@ -1045,9 +1144,27 @@ export default function TimeInOutScreen() {
                           Location
                         </Text>
                       </View>
-                      <Text className="text-gray-900 font-bold text-sm mt-2 ml-12">
-                        {captured.location}
-                      </Text>
+                      {locState === 'pending' ? (
+                        <View className="flex-row items-center mt-2 ml-12">
+                          <ActivityIndicator size="small" color="#0066FF" />
+                          <Text className="text-gray-500 text-sm ml-2">
+                            Getting location…
+                          </Text>
+                        </View>
+                      ) : locState === 'failed' ? (
+                        <Text
+                          className="text-sm font-medium mt-2 ml-12"
+                          style={{ color: '#DC2626' }}
+                        >
+                          {locationError === 'Location permission denied'
+                            ? 'Location permission denied. Please enable it in settings.'
+                            : 'Could not fetch your location. Please try again.'}
+                        </Text>
+                      ) : (
+                        <Text className="text-gray-900 font-bold text-sm mt-2 ml-12">
+                          {captured.location}
+                        </Text>
+                      )}
                     </View>
                   </View>
 

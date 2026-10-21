@@ -161,7 +161,7 @@ export default function HomeScreen() {
       if (profileData) setProfile(profileData);
 
       // 2. Load today's attendance
-      const today = new Date().toISOString().split('T')[0];
+      const today = toDateString(new Date());
 
       const { data: att } = await supabase
         .from('attendance')
@@ -196,7 +196,7 @@ export default function HomeScreen() {
         .from('attendance')
         .select('*')
         .eq('user_id', user.id)
-        .gte('date', startOfMonth.toISOString().split('T')[0]);
+        .gte('date', toDateString(startOfMonth));
 
       const records = monthRecords || [];
 
