@@ -12,7 +12,7 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, router } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import type { LucideIcon } from 'lucide-react-native';
 import {
   Mail,
@@ -263,7 +263,6 @@ export default function ProfileScreen() {
       const { data: { user } } = await supabase.auth.getUser();
 
       if (!user) {
-        router.replace('/login');
         return;
       }
 
@@ -500,7 +499,6 @@ export default function ProfileScreen() {
           setLoggingOut(true);
           await supabase.auth.signOut();
           setLoggingOut(false);
-          router.replace('/login');
         },
       },
     ]);
