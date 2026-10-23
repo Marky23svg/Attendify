@@ -670,7 +670,7 @@ export default function CalendarScreen() {
                     <MapPin size={13} color={BLUE} />
                     <Text
                       className="text-[#64748B] text-xs ml-1 flex-1"
-                      numberOfLines={1}
+                      numberOfLines={2}
                     >
                       {attendance?.time_in_location || 'No location'}
                     </Text>
@@ -728,7 +728,7 @@ export default function CalendarScreen() {
                     <MapPin size={13} color={BLUE} />
                     <Text
                       className="text-[#64748B] text-xs ml-1 flex-1"
-                      numberOfLines={1}
+                      numberOfLines={2}
                     >
                       {attendance?.time_out_location || 'No location'}
                     </Text>

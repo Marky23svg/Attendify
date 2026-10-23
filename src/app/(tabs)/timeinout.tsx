@@ -259,22 +259,52 @@ export default function TimeInOutScreen() {
         return { label: 'Location permission denied', lat: 0, lng: 0 };
       }
 
-      let loc: Location.LocationObject;
+      const attempts: Location.LocationObject[] = [];
+
       try {
-        loc = await withTimeout(
-          Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          }),
-          10_000
+        attempts.push(
+          await withTimeout(
+            Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.High,
+            }),
+            12_000
+          )
         );
-      } catch {
-        const lastKnown = await Location.getLastKnownPositionAsync({
-          maxAge: 5 * 60 * 1000,
+      } catch {}
+
+      const highAccuracy =
+        attempts[0]?.coords.accuracy ?? Number.POSITIVE_INFINITY;
+      if (highAccuracy > 50) {
+        try {
+          attempts.push(
+            await withTimeout(
+              Location.getCurrentPositionAsync({
+                accuracy: Location.Accuracy.Balanced,
+              }),
+              6_000
+            )
+          );
+        } catch {}
+      }
+
+      let loc: Location.LocationObject | null =
+        attempts.length > 0
+          ? attempts.reduce((best, current) =>
+              (current.coords.accuracy ?? Number.POSITIVE_INFINITY) <
+              (best.coords.accuracy ?? Number.POSITIVE_INFINITY)
+                ? current
+                : best
+            )
+          : null;
+
+      if (!loc) {
+        loc = await Location.getLastKnownPositionAsync({
+          maxAge: 2 * 60 * 1000,
         }).catch(() => null);
-        if (!lastKnown) {
-          return { label: 'Location unavailable', lat: 0, lng: 0 };
-        }
-        loc = lastKnown;
+      }
+
+      if (!loc) {
+        return { label: 'Location unavailable', lat: 0, lng: 0 };
       }
 
       const { latitude, longitude } = loc.coords;
@@ -286,7 +316,7 @@ export default function TimeInOutScreen() {
         let response: Response;
         try {
           response = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`,
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1&accept-language=en`,
             {
               headers: {
                 'User-Agent': 'Attendify-App/1.0',
@@ -303,18 +333,69 @@ export default function TimeInOutScreen() {
           const data = await response.json();
           const addr = data.address || {};
 
-          const parts = [
-            addr.road || addr.pedestrian || addr.path,
-            addr.neighbourhood || addr.suburb,
-            addr.city || addr.town || addr.village || addr.municipality,
+          const street = [
+            addr.house_number,
+            addr.road || addr.pedestrian || addr.path || addr.footway,
+          ]
+            .filter(Boolean)
+            .join(' ');
+
+          const localityCandidates = [
+            addr.neighbourhood,
+            addr.quarter,
+            addr.suburb,
+            addr.village,
+            addr.hamlet,
           ].filter(Boolean);
 
-          const unique = Array.from(new Set(parts));
+          const barangay =
+            localityCandidates.find((value) =>
+              /barangay/i.test(String(value))
+            ) ||
+            addr.quarter ||
+            addr.suburb ||
+            addr.neighbourhood ||
+            addr.village ||
+            addr.hamlet;
+
+          const city =
+            addr.city ||
+            addr.municipality ||
+            addr.town ||
+            addr.village ||
+            addr.city_district;
+
+          const province =
+            addr.state || addr.province || addr.region || addr.state_district;
+
+          const extraTown =
+            addr.town && addr.city && addr.town !== city ? addr.town : null;
+
+          const rawParts = [
+            street,
+            barangay,
+            extraTown,
+            city,
+            province,
+            addr.postcode,
+            addr.country,
+          ]
+            .filter(Boolean)
+            .map((part) => String(part).trim())
+            .filter(Boolean);
+
+          const seen = new Set<string>();
+          const unique = rawParts.filter((part) => {
+            const key = part.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
 
           if (unique.length > 0) {
             label = unique.join(', ');
           } else if (data.display_name) {
-            label = data.display_name.split(',').slice(0, 3).join(',').trim();
+            label = String(data.display_name).trim();
           }
         }
       } catch (err) {
